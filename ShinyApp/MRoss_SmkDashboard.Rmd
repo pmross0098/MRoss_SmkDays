@@ -1,0 +1,522 @@
+---
+title: "Wildfire Smoke in Washington State"
+output: 
+  flexdashboard::flex_dashboard:
+    theme:
+      bg: "#005500"
+      fg: "#FDF7F7"
+      primary: "#008800"
+      # base_font: !expr bslib::font_google("Prompt")
+      # code_font: !expr bslib::font_google("JetBrains Mono")
+  orientation: rows
+  vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(ggformula)
+library(plotly)
+library(tmap)
+library(tmaptools)
+library(raster)
+library(shiny)
+library(shinyWidgets)
+library(RColorBrewer)
+library(viridis)
+library(sf)
+library(kableExtra)
+library(shinyscreenshot)
+
+load("ShInput/KrigeData.RData")
+load("ShInput/ShpData.RData")
+load("ShInput/SmkData.RData")
+
+exp_box <- function(bb, 
+                    perc = c(0.1,0.1,0.1,0.1), #bottom, left, top, right 
+                    rnd = 1000) {
+  if (class(bb)[1] == "Extent") { # Extent of RasterLayer
+    xrng.adj.l <- (bb@xmax-bb@xmin) * perc[2]
+    xrng.adj.r <- (bb@xmax-bb@xmin) * perc[4]
+    yrng.adj.b <- (bb@ymax-bb@ymin) * perc[1]
+    yrng.adj.t <- (bb@ymax-bb@ymin) * perc[3]
+    out_ext <- extent(floor((bb@xmin-xrng.adj.l)/rnd)*rnd,
+                      ceiling((bb@xmax+xrng.adj.r)/rnd)*rnd,
+                      floor((bb@ymin-yrng.adj.b)/rnd)*rnd,
+                      ceiling((bb@ymax+yrng.adj.t)/rnd)*rnd)
+  } else if (class(bb) == "bbox") {    # sf spatial object
+    out_ext <- in_box <- st_bbox(bb)
+    xrng.adj.l <- (in_box[['xmax']]-in_box[['xmin']]) * perc[2]
+    xrng.adj.r <- (in_box[['xmax']]-in_box[['xmin']]) * perc[4]
+    yrng.adj.b <- (in_box[['ymax']]-in_box[['ymin']]) * perc[1]
+    yrng.adj.t <- (in_box[['ymax']]-in_box[['ymin']]) * perc[3]
+    out_ext[['xmin']] <- floor((in_box[['xmin']]-xrng.adj.l)/rnd)*rnd
+    out_ext[['xmax']] <- floor((in_box[['xmax']]+xrng.adj.r)/rnd)*rnd
+    out_ext[['ymin']] <- floor((in_box[['ymin']]-yrng.adj.b)/rnd)*rnd
+    out_ext[['ymax']] <- floor((in_box[['ymax']]+yrng.adj.t)/rnd)*rnd
+  }
+  return(out_ext)
+}
+
+sld_nms <- setNames(1:7, c("2012-13","2014-15","2016-17","2018-19",
+                           "2020-21","2022-23","2024-25"))
+
+source("allow_named_choices.R")
+
+names(outkrig_lst) <- c("2012-13","2014-15","2016-17","2018-19",
+                        "2020-21","2022-23","2024-25")
+
+# Rename for presentation purposes
+Cities <- City_shp
+Counties <- County_shp
+Washington <- WA_shp
+AllBuffers <- buf_shp
+AQSites <- allsites_shp
+rm(City_shp, County_shp, WA_shp, buf_shp)
+
+```
+
+The Growing Threat {data-icon="fa-fire"}
+======================
+
+Column {.sidebar}
+-------------------
+
+#### The Growing Threat
+
+Through a combination of poor long-term forest management decisions and climate change, Washington State has seen a significant increase in wildfire smoke days over the past decade. Universal kriging is a useful tool to estimate smoke days in places distal to air quality monitors, clearly illustrating the worsening wildfire smoke conditions.
+
+Tallying historical smoke days per two-year period (biennium), a robust linear model can be leveraged to produce non-local estimates and projections. 
+
+*_Note:_*  This analysis includes historical smoke days from 2012-2021, and uses the linear model to predict annual smoke days for the final two bienniums (2022-23, 2024-25) at all monitor locations, kriging those results.
+
+*_Note:_*  The leaflet map widget is buggy, so if necessary, click the "Reset Map" button to redraw original map.
+
+Column
+-------------------
+
+### Estimated Smoke Days with Universal Kriging Analysis
+
+```{r}
+
+rw_breaks <- allow_named_choices(
+  inputId = "Bienn", #id of widget to extend
+  update_function = updateSliderTextInput, #widget updater function
+  input    = input,
+  session  = session,
+  init_choices  = sld_nms,   #named choices, not only names
+  init_selected = sld_nms[1] #named select , not only name
+)
+
+bien <- reactive({input$Bienn})
+
+observeEvent(input$Reset,
+             {updateSliderInput(session, input = "Bienn",
+                                value = 1)})
+
+fillCol(flex=c(0.12,0.88),
+  fillRow(flex=c(1,NA),
+    sliderTextInput("Bienn", label = "Select Biennium:",
+      choices = names(sld_nms),     #init with names not values
+      selected =  names(sld_nms)[1], #init with name selection
+      animate = animationOptions(interval = 1500, loop = TRUE), 
+      width = "40%", force_edges = TRUE
+    ),
+    actionButton("Reset", "Reset Map")
+  ),
+  renderTmap({
+    Monitors <- reactive({AQSites[!is.na(
+      st_drop_geometry(AQSites[bien()])),]})
+    strProj <- reactive({ifelse(bien() %in% c("2022-23","2024-25"), 
+                                "Projected<br>","Estimated<br>")})
+    strProjB <- reactive({ifelse(bienB() %in% c("2022-23","2024-25"), 
+                                "Projected<br>","Observed<br>")})
+    
+    tm_shape(outkrig_lst[[bien()]]) +
+      tm_raster(style = "cont", breaks = seq(0,25,5), midpoint = 12,
+                palette = "-RdYlGn", title = paste0(strProj(),"Smoke<br>Days"), alpha = 0.8) +
+    tm_shape(Washington, is.master = TRUE, bbox = exp_box(st_bbox(Washington), 
+                                            perc = c(0.05,0.05,0.05,0.05))) + 
+      tm_fill(col = NA, alpha = 0) + 
+      tm_borders(col = 'black', lwd = 3.5) + 
+    tm_shape(Monitors()) +
+      tm_symbols(col = bien(), size = 0.17, alpha = 1, 
+                 border.col = "gray15", border.lwd = 2,
+                 title.col = paste0(strProjB(), "Annual<br>Smoke Days"),
+                 palette = "-RdYlGn") +
+    tmap_options(basemaps = "Esri.WorldTopoMap")
+  })
+)
+
+```
+
+Community Risk {data-icon="fa-city"}
+======================
+
+Column {.sidebar}
+-------------------
+
+#### Rough Prediction
+
+Smoke days estimated by universal kriging can be summarized to both the cities and counties of Washington State. Scroll to investigate the historical and projected annual number of smoke days. Zoom and click on communities to view the estimates.
+
+_Note:_  Cities and Counties have been summarized to the 75$^{th}$ percentile value of the kriged layer within each boundary.
+
+Column
+-------------------
+
+### Estimated Smoke Days Summarized with Zonal Statistics
+
+```{r}
+rw_breaks <- allow_named_choices(
+  inputId = "BiennB", #id of widget to extend
+  update_function = updateSliderTextInput, #widget updater function
+  input    = input,
+  session  = session,
+  init_choices  = sld_nms,   #named choices, not only names
+  init_selected = sld_nms[1] #named select , not only name
+)
+
+bienB <- reactive({input$BiennB})
+
+observeEvent(input$ResetB,
+             {updateSliderInput(session, input = "BiennB", value = 1)})
+
+fillCol(flex=c(0.12,0.88),
+  fillRow(flex=c(1,NA),
+    sliderTextInput("BiennB", label = "Select Biennium:",
+      choices = names(sld_nms),     #init with names not values
+      selected =  names(sld_nms)[1], #init with name selection
+      animate = animationOptions(interval = 1500, loop = TRUE), 
+      width = "40%", force_edges = TRUE
+    ),
+    actionButton("ResetB", "Reset Map")
+  ),
+  renderTmap({
+    Monitors <- reactive({AQSites[!is.na(
+      st_drop_geometry(AQSites[bienB()])),]})
+    strProj <- reactive({ifelse(bienB() %in% c("2022-23","2024-25"), 
+                                "Projected<br>","Estimated<br>")})
+    strProjB <- reactive({ifelse(bienB() %in% c("2022-23","2024-25"), 
+                                "Projected<br>","Observed<br>")})
+    tm_shape(Washington) + 
+        tm_fill(col = NA, alpha = 0) + 
+        tm_borders(col = 'black', lwd = 2) + 
+      tm_shape(Counties) + 
+        tm_fill(col = paste0(bienB()), alpha = 0.4, palette = "-RdYlGn",
+                title = paste0(strProj(), "Annual<br>Smoke Days:<br>Counties"),
+                breaks = seq(0,30,5)) + 
+        tm_borders(col = 'black', lwd = 2) + 
+      tm_shape(Cities) + 
+        tm_fill(col = paste0(bienB()), alpha = 0.7, palette = "-RdYlGn",
+                title = paste0(strProj(), "Annual<br>Smoke Days:<br>Cities"),
+                breaks = seq(0,30,5)) + 
+        tm_borders(col = 'black', lwd = 2) + 
+      tm_shape(Monitors(), is.master = TRUE, 
+               bbox = exp_box(st_bbox(Washington), perc = c(-0.1,-0.1,-0.1,-0.1))) +
+        tm_symbols(col = bienB(), size = 0.17, alpha = 1, 
+                   border.col = "gray15", breaks = seq(0,30,5),
+                   title.col = paste0(strProjB(), "Annual<br>Smoke Days<br>AQ Monitors"), 
+                   border.lwd = 2, palette = "-RdYlGn") +
+      tmap_options(basemaps = "Esri.WorldTopoMap",
+                   qtm.scalebar = TRUE,
+                   qtm.minimap = TRUE)
+      
+  })
+)
+
+```
+
+Regression Analysis {.storyboard data-icon="fa-chart-line"}
+======================
+
+### _Outcome Variable:_<br>Smoke Days tallied from Air Quality networks in the US and Canada
+
+```{r, fig.dim=c(10,14)} 
+
+leg_ttl <- reactive({ifelse(input$RadSmk=="Days Monitored",
+                           "Days<br>Monitored", "Smoke<br>Days")})
+pl_col <- reactive({ifelse(input$RadSmk=="Days Monitored", "n", "smkdays")})
+observeEvent(input$ResetC, {updateRadioButtons(session, input = "RadSmk", 
+                                               selected = "Days Monitored")})
+
+fillCol(flex=c(0.08,0.92),
+  fillRow(flex=c(1,NA),
+    radioButtons("RadSmk", label = NULL,
+                 choices = c("Days Monitored", "Smoke Days"),
+                 selected = "Days Monitored", inline = FALSE),
+    actionButton("ResetC", "Reset Map")
+  ),
+  renderTmap({
+    tm_shape(Washington, is.master = TRUE, bbox = exp_box(st_bbox(Washington),
+                                                      perc = c(0.3,0.3,0.3,0.3))) +
+      tm_fill(col = NA, alpha = 0) +
+      tm_borders(col = 'black', lwd = 2) +
+    tm_shape(AQSites) +
+      tm_symbols(col = pl_col(), size = 0.35, alpha = 1, border.col = "gray",
+                 title.col = paste0(leg_ttl(),"<br>(2012-2021)"), border.lwd = 1) +
+    tm_layout(bg.color = "lightblue",
+              outer.bg.color = "#009900")
+  
+}))
+
+```
+
+***
+
+Smoke Days were the outcome of interest, tallied from historical EPA daily $PM_{2.5}$ readings (particulates <2.5 microns) at air quality monitors managed by the Environmental Protection Agency.
+
+``` {r}
+a("EPA Air Quality Data", target = "_blank",
+  href="https://aqs.epa.gov/aqsweb/airdata/download_files.html")
+```
+
+To strengthen the linear model, additional data was included from the air quality monitoring system in British Columbia, just to the north.
+
+``` {r}
+a("BC Air Quality Archive", target = "_blank",
+  href="https://envistaweb.env.gov.bc.ca/")
+```
+
+All monitors within 150 miles of the Washington border were used for this analysis, from 2012-2021. Note that 2022 was *omitted* as the data is still incomplete.
+
+### _Smoke Day Definition:_<br>Ensure air quality is treated equivalently in the US and Canadian datasets
+
+``` {r}
+
+segs <- data.frame(x = c(0,12.5,56,151,350),
+                   y = c(0,52,150,200,400),
+                   xend = c(12.5,56,151,350,500),
+                   yend = c(52,150,200,400,500))
+
+renderPlotly({
+  ggplotly(ggplot(data = pmaq_df, aes(x = Arithmetic.Mean, y = AQI,
+                                      text = DateLoc)) +
+      geom_point(size = 2, alpha = 0.5) +
+      theme_bw() +
+      labs(title = "Association of PM2.5 and AQI",
+         subtitle = "Washington State, 2020",
+         x = "P.M 2.5") + #seg
+      geom_segment(data = segs, aes(x=x,y=y,xend=xend,yend=yend),color = "blue", 
+                 linewidth = 1, inherit.aes = FALSE, alpha = 0.3) +
+      geom_hline(yintercept=100, color = "red", alpha = 0.5, linetype = 2, linewidth = 1.2) +
+      geom_vline(xintercept=35, color = "red", alpha = 0.5, linetype = 2, linewidth = 1.2) +
+      theme(plot.background = element_rect(fill = "#009900"),
+            panel.background = element_rect(fill = "#00AA00")),
+    tooltip = "text") %>% layout(showlegend = FALSE)
+  
+})
+
+```
+
+***
+
+As Canada primarily tracks an Air Quality Health Index and the US reports an Air Quality Index, for the purposes of regression, using the common metric of particulates smaller than 2.5 microns ($PM_{2.5}$) is appropriate.
+
+For this analysis, the determination of what constitutes a _smoke day_ on this common scale draws on EPA guidance, where an AQI of 100 is considered "Unhealthy for Sensitive Groups" (older adults, children, etc.). 
+
+``` {r}
+a("EPA Air Quality Index Categories", target = "_blank",
+  href="https://www.airnow.gov/aqi/aqi-basics/")
+```
+
+An AQI of 100 is registered at roughly $PM_{2.5}$ = 35, so a monitor registering a daily mean of $PM_{2.5}$ = 35 tallies one smoke day. Data is imputed for monitors with missing days such that a final smoke day tally is registered as smoke days per 153 days, the period between June 1st and October 31st, that standard wildfire season in Washington State.
+
+### _Wildfire Risk Covariates:_<br>Proximity to forests at risk of wildfire are a risk for exposure to wildfire smoke
+
+```{r} 
+
+bufs <- reactive({input$RadBuf})
+observeEvent(input$ResetD, {updateRadioButtons(session, input = "RadBuf", 
+                                               selected = "All Buffers")})
+
+fillCol(flex=c(0.08,0.92),
+  fillRow(flex=c(1,NA),
+    radioButtons("RadBuf", label = NULL,
+                 choices = c("All Buffers", "U.S. Buffers", "B.C. Buffers"),
+                 selected = "All Buffers", inline = TRUE),
+    actionButton("ResetD", "Reset Map")
+  ),
+
+  renderTmap({
+    if (bufs()=="U.S. Buffers") {
+      Buffers <- AllBuffers[AllBuffers$Shape %in% c("us40","us80","us125"),]
+    } else if (bufs()=="B.C. Buffers") {
+      Buffers <- AllBuffers[AllBuffers$Shape %in% c("cn40","cn80","cn125"),]
+    } else {
+      Buffers <- AllBuffers
+    }
+    tm_shape(WeUS_shp) + 
+      tm_fill(col = NA, alpha = 0) + 
+      tm_borders(col = 'grey65', lwd = 1.2) + 
+    tm_shape(Can_shp) + 
+      tm_fill(col = NA, alpha = 0) + 
+      tm_borders(col = 'grey65', lwd = 1.2) + 
+    tm_shape(outUS_rst) +
+      tm_raster(style = "cont", palette = "-RdYlGn",
+                title = "log(WHP<br>us2020+1)", midpoint = 5, alpha = 0.6) +
+    tm_shape(outCan_rst) +
+      tm_raster(style = "cont", palette = "-RdYlGn",
+                title = "PTSA BC", midpoint = 5, alpha = 0.6) +
+    tm_shape(Washington, is.master = TRUE, bbox = exp_box(st_bbox(Washington), 
+                                                      perc = c(0.3,0.3,0.3,0.3))) + 
+      tm_fill(col = NA, alpha = 0) + 
+      tm_borders(col = "black", lwd = 2) + 
+    tm_shape(Buffers) +
+      tm_fill(col = "Shape", alpha = 0.4, title = "Buffers", 
+              palette = get_brewer_pal("Accent", n = 6)) +
+      tm_borders(col = "black", lwd = 1, alpha = 0.6) +
+    tm_layout(main.title = "Wildfire Risk in the Pacific Northwest",
+              main.title.position = 0,
+              main.title.size = 1,
+              legend.outside = TRUE,
+              bg.color = "lightblue",
+              outer.bg.color = "#009900") 
+  
+}))
+
+```
+
+***
+
+Proximity to areas at high risk of wildfire is an intuitive risk for wildfire smoke and the US Forest Service produces a raster of Wildfire Hazard Potential at 270m resolution. Proximity to risk is summarized using buffer zones around the monitor sites, with values used as covariates in a linear model.
+
+``` {r}
+a("USFS Wildfire Hazard Potential: 2020", target = "_blank",
+  href="https://www.fs.usda.gov/rds/archive/Catalog/RDS-2020-0016")
+```
+
+To the north of Washington, British Columbia also produces a raster layer of risk known as the BC Provincial Strategic Threat Analysis (PSTA).
+
+``` {r}
+a("BC PSTA: 2019 Dataset", target = "_blank",
+  href="https://catalogue.data.gov.bc.ca/dataset/bc-wildfire-psta-fire-threat-rating")
+```
+
+Exposure to wildfire risk was summarized to each air quality monitor using buffer zones of 40, 80, and 125 radius exclusive. The $75^{th}$ percentile values were chosen as covariates in the regression. Ultimately, only the 40 and 80mi buffers were found to be statistically significant.
+
+### _Easting and Northing:_<br>A simple surrogate to capture complex geographic and environmental variation
+
+```{r}
+fillCol(
+  renderPlotly({
+    ggplotly(ggplot(siteregbi_df, aes(x = X_10mi, y = Per153, color = Bienn, 
+                                      text = labs)) +
+      geom_point() +
+      scale_color_viridis(discrete = TRUE, option = "C") +
+      scale_x_continuous(name = "Easting Miles", breaks = c(10,20,30,40,50,60), 
+                       labels = c("100","200","300","400","500","600")) +
+      geom_spline(aes(x = X_10mi, y = Per153), colour = "blue", linewidth = 1.5,
+                  df = 4, alpha = 0.6, inherit.aes = FALSE, data = siteregbi_df) +
+      theme_bw() +
+      theme(plot.background = element_rect(fill = "#009900"),
+            panel.background = element_rect(fill = "#00AA00")) +
+      labs(title = "Smoke Days by Longitude: Spline(df=4)",
+           y = "Observed Annual Smoke Days"),
+    tooltip = "text") %>% layout(showlegend = FALSE)
+  }),
+  renderPlotly({
+    ggplotly(ggplot(siteregbi_df, aes(x = Y_10mi, y = Per153, color = Bienn,
+                                      text = labs)) +
+      geom_point() +
+      scale_color_viridis(discrete = TRUE, option = "C") +
+      scale_x_continuous(name = "Northing Miles", breaks = c(-20,-10,0,10,20),
+                       labels = c("-200","-100","0","100","200")) +
+      geom_spline(aes(x = Y_10mi, y = Per153), colour = "blue", linewidth = 1.5,
+                  df = 3, alpha = 0.6, inherit.aes = FALSE, data = siteregbi_df) +
+      theme_bw() +
+      theme(plot.background = element_rect(fill = "#009900"),
+            panel.background = element_rect(fill = "#00AA00")) +
+      labs(title = "Smoke Days by Latitude: Spline(df=3)",
+           y = "Observed Annual Smoke Days"),
+    tooltip = "text") %>% layout(showlegend = FALSE)
+  })
+)
+```
+
+***
+
+The model of wildfire risk is a convoluted one, with risk factors like temperature, precipitation, and elevation contributing to the likelihood. Smoke dispersion adds yet another layer of complexity with factors like topography and wind patterns influencing air quality on a day-to-day basis.
+
+Rather than incorporate these additional covariates, the model can be simplified by using *easting* and *northing* as surrogates. As a function of year, broad geographic trends are apparent and can be incorporated as covariate terms defined by a smooth spline interacting with time (biennium) in a spatiotemporal model.
+
+### _Final Linear Model:_<br>Results and Residuals {data-commentary-width=350}
+
+$$\#SmokeDays_i = \beta_{0} + \beta_{1}X_{Year_i\;{\colon}\;SPL(X-coord,4)} +  \beta_{1}X_{Year_i\;{\colon}\;SPL(Y-coord,3)} + \beta_{2}X_{wt\_sum40_i} $$
+
+``` {r}
+  
+rw_breaks <- allow_named_choices(
+  inputId = "BiennC", #id of widget to extend
+  update_function = updateSliderTextInput, #widget updater function
+  input    = input,
+  session  = session,
+  init_choices  = sld_nms[1:5],   #named choices, not only names
+  init_selected = sld_nms[1] #named select , not only name
+)
+
+bienC <- reactive({input$BiennC})
+observeEvent(input$ResetE, 
+             {updateSliderInput(session, input = "BiennC", value = 1)})
+
+fillCol(flex = c(0.15, 0.85),
+  fillRow(flex = c(1,NA),
+    sliderTextInput("BiennC", label = "Investigate Residuals:",
+      choices = names(sld_nms[1:5]),     #init with names not values
+      selected =  names(sld_nms)[1], #init with name selection
+      animate = animationOptions(interval = 1500, loop = TRUE), 
+      width = "40%", force_edges = TRUE
+    ),
+      actionButton("ResetE", "Reset Map")
+    ),
+  renderTmap({
+    
+    Monitors <- reactive({AQSites[!is.na(
+      st_drop_geometry(AQSites[bienC()])),]})
+
+    tm_shape(Washington) + 
+        tm_fill(col = NA, alpha = 0) + 
+        tm_borders(col = 'black', lwd = 2) + 
+      tm_shape(Monitors(), is.master = TRUE, 
+               bbox = exp_box(st_bbox(Washington), perc = c(0.1,0.1,0.1,0.1))) +
+      tm_symbols(col = paste0("rsd",bienC()), 
+                 size = 0.6, #sqrt(abs(paste0("rsd",bienB()))),
+                 alpha = 1, border.col = "gray15", breaks = seq(-10,20,5),
+                 title.col = "Model<br>Residuals", midpoint = 0,
+                 border.lwd = 2, palette = "-RdYlGn") +
+      tmap_options(basemaps = "Esri.WorldTopoMap",
+                 qtm.scalebar = TRUE,
+                 qtm.minimap = TRUE)
+  })
+)
+
+```
+
+***
+And the results of the model:
+
+``` {r}
+m2_coef[4:10,1] <- c("Year : (X,1)","Year : (X,2)","Year : (X,3)","Year : (X,4)",
+                     "Year : (Y,1)","Year : (Y,2)","Year : (Y,3)")
+m2_coef[2] <- round(m2_coef[2], 2)
+
+kable(m2_coef, format = "html", align = 'lcc', row.names = F, escape = F, booktabs = T) %>% 
+  kable_paper(full_width = FALSE, position = "left") %>%
+  add_header_above(header = c("Linear Model" = 3), 
+                   font_size = 18, bold = T,
+                   color = "#EDE7E7") %>%
+  row_spec(0, bold = TRUE, color = "#EDE7E7") %>%
+  row_spec(c(2,4,6,8,10), color = "#EDE7E7", background = "#007700") %>%
+  row_spec(c(1,3,5,7,9), color = "#EDE7E7", background = "#009900") %>%
+  column_spec(1, bold = TRUE)
+
+```
+
+Ultimately, there are areas that over or underestimate the number of smoke days, but overall, the model works well. To improve the model, additional air quality data could be utilized, ensuring improved coverage of the state, but drawing data from disparate sources is not without risks.
+
+Special thanks to Cara Wychgram and Frank Curriero of Johns Hopkins University for their advice regarding the project!
+
+Marty Ross
+
+p.martin.ross@gmail.com
