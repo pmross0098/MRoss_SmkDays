@@ -43,34 +43,7 @@ library(splines)
 library(sjPlot)
 library(geoR)
 library(raster)
-# library(maptools)
-# library(PBSmapping)
-# library(stats)
-# # library(gstat)
-# # library(rgdal)
-# # library(ggplot2)
-# # library(splancs)
-# library(sp)
-# library(ggpubr)
-# library(RColorBrewer)
-# library(rgeos)
-# library(rgdal)
-# library(stars)
-# library(ggspatial)
-# library(DT)
-# library(spatialEco)
-# library(utils)
-# library(stringr)
-# library(formattable)
-# library(magick)
-# library(webshot)
-# library(stats)
-# library(npreg)
-# library(spatstat)
-# library(maps)
-# library(MASS)
-# library(ggplotify)
-# nngeo::st_nn
+library(sqldf)
 
 options(tinytex.verbose = TRUE)
 
@@ -1664,4 +1637,4 @@ save.image("all_data.RData")
 ```
 
 Please visit the Shiny app to browse the results:
-
+https://pmross0098.shinyapps.io/MRoss_SmkDaysWA/
