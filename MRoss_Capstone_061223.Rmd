@@ -1649,13 +1649,12 @@ buf_shp$Shape <- c("us40","us40","us80","us80","us125","us125","cn125","cn80",
                    "cn80","cn40","cn40")
 rm(usbuf_shp)
 
-if(!dir.exists("Outputs/ShinyOutputs")) dir.create("Outputs/ShinyOutputs")
 save(Can_shp, AllUS_shp, outUS_rst, outCan_rst, allsites_shp, County_shp, 
      City_shp, WA_shp, buf_shp, 
-     file = file.path(out_dir, "ShinyOutputs/ShpData.RData")) 
+     file = file.path("ShinyApp/ShInput/ShpData.RData")) 
 save(siteregbi_df, days_df, pmaq_df, m2_coef, 
-     file = file.path(out_dir, "ShinyOutputs/SmkData.RData")) 
-save(outkrig_lst, file = file.path(out_dir, "ShinyOutputs/KrigeData.RData"))
+     file = file.path("ShinyApp/ShInput/SmkData.RData")) 
+save(outkrig_lst, file = file.path("ShinyApp/ShInput/KrigeData.RData"))
 
 ```
 
